@@ -18,6 +18,8 @@ public:
     void Put(const std::string& key,const std::string& value);
 
     std::string Get(const std::string& key);
+
+    bool Delete(const std::string& key);
 private:
     void LoadIndexFromDisk();
 

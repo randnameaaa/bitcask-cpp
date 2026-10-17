@@ -37,8 +37,12 @@ void Engine::LoadIndexFromDisk(){
             LogRecord record = DecodeLogRecord(record_buf);
 
             // 5. 将 Key 和 对应的位置信息登记到内存目录
-            // 注意：如果是被删除的数据（kDeleted），真实的引擎这里应该从目录里抹除它，这里先简化
-            memory_index_[record.key] = LogRecordPos{1, offset, record_total_size};
+            if (record.type == LogRecordType::kNormal) {
+                memory_index_[record.key] = LogRecordPos{1, offset, record_total_size};
+            } else if (record.type == LogRecordType::kDeleted) {
+                // 如果读到墓碑，说明这个数据被删了，从目录里抹除它
+                memory_index_.erase(record.key);
+            }
 
             // 6. 游标向前推进，准备读下一条
             offset += record_total_size;
@@ -71,6 +75,23 @@ std::string Engine::Get(const std::string& key) {
     LogRecord record = DecodeLogRecord(raw_data);
     
     return record.value;
+}
+
+bool Engine::Delete(const std::string& key){
+    if(memory_index_.find(key)==memory_index_.end()){
+        return false;
+    }
+
+    LogRecord record{key, "", LogRecordType::kDeleted};
+    std::string encoded = EncodeLogRecord(record);
+
+    active_file_->Append(encoded);
+    active_file_->Sync();
+
+    memory_index_.erase(key);
+    current_offset_ += encoded.size();
+
+    return true;
 }
     
 }

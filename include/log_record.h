@@ -9,7 +9,7 @@ namespace bitcask{
 
 enum class LogRecordType{
     kNormal = 1,
-    kDelete = 0
+    kDeleted = 0
 };
 
 struct LogRecord{
