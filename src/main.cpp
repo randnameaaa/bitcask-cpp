@@ -1,31 +1,20 @@
 #include <iostream>
-#include <filesystem>
 #include "engine.h"
 
 int main() {
     bitcask::Engine db(".");
-    std::string data_file = "./0001.data";
 
-    // 1. 暴力修改：把同一个 Key 的值反复修改 1000 次
-    // 在旧版里，这会产生 1000 条历史废弃数据
-    std::cout << "Writing 1000 historical versions of a key..." << std::endl;
+    std::cout << "Writing massive data to trigger file rollover..." << std::endl;
     for (int i = 0; i < 1000; i++) {
-        db.Put("boss_key", "value_" + std::to_string(i));
+        std::string key = "user_" + std::to_string(i);
+        // 构造一个稍微大一点的虚假字符串（长达 100 字节），加速文件写满
+        std::string val(100, 'A'); 
+        db.Put(key, val);
     }
 
-    // 打印此时被撑满的磁盘文件大小
-    auto size_before = std::filesystem::file_size(data_file);
-    std::cout << "[Before Merge] File Size: " << size_before << " bytes" << std::endl;
-
-    // 2. 召唤终极魔法：执行垃圾回收
-    db.Merge();
-
-    // 打印压缩后的磁盘文件大小
-    auto size_after = std::filesystem::file_size(data_file);
-    std::cout << "[After Merge]  File Size: " << size_after << " bytes" << std::endl;
-    
-    // 3. 验证数据正确性：虽然换了皮，依然能读出最后一次写入的值
-    std::cout << "Verification: boss_key = " << db.Get("boss_key") << std::endl;
+    // 测试一：跨越文件的极限读取（user_10 肯定在早期的文件里，user_999 肯定在最新的活跃文件里）
+    std::cout << "Get user_10 (old file): " << db.Get("user_10").size() << " bytes" << std::endl;
+    std::cout << "Get user_999 (active file): " << db.Get("user_999").size() << " bytes" << std::endl;
 
     return 0;
 }
