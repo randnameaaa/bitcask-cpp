@@ -1,3 +1,0 @@
-/workspaces/bitcask-cpp/build/CMakeFiles/bitcask_test.dir
-/workspaces/bitcask-cpp/build/CMakeFiles/edit_cache.dir
-/workspaces/bitcask-cpp/build/CMakeFiles/rebuild_cache.dir
