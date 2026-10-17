@@ -5,16 +5,16 @@
 
 namespace bitcask {
 
-Engine::Engine(const std::string& dir_path){
-    // 暂且固定写死文件名，后续可以扩展为扫描目录下所有文件
-    std::string file_path = dir_path + "/0001.data";
+Engine::Engine(const std::string& dir_path) : dir_path_(dir_path) {
+    // 暂且固定写死文件名，后续可以扩展为扫描目录下所有文件 
+    std::string file_path = dir_path_ + "/0001.data";
     active_file_ = std::make_unique<FileIO>(file_path);
     
     // 启动引擎的第一步：恢复记忆！
     LoadIndexFromDisk();
 }
 
-void Engine::LoadIndexFromDisk(){
+void Engine::LoadIndexFromDisk() {
     uint64_t offset = 0;
     while(1)
         try{
@@ -50,7 +50,6 @@ void Engine::LoadIndexFromDisk(){
             break;
         }
     current_offset_ = offset; 
-    std::cout << "Engine initialized! Rebuilt " << memory_index_.size() << " keys from disk." << std::endl;
 }
 
 void Engine::Put(const std::string& key, const std::string& value) {
@@ -77,7 +76,7 @@ std::string Engine::Get(const std::string& key) {
     return record.value;
 }
 
-bool Engine::Delete(const std::string& key){
+bool Engine::Delete(const std::string& key) {
     if(memory_index_.find(key)==memory_index_.end()){
         return false;
     }
@@ -92,6 +91,36 @@ bool Engine::Delete(const std::string& key){
     current_offset_ += encoded.size();
 
     return true;
+}
+
+void Engine::Merge() {
+    if(memory_index_.empty()) return ;
+
+    std::string old_file = dir_path_ + "/0001.data";
+    std::string merge_file = dir_path_ + "/merge.data";
+
+    auto merge_io = std::make_unique<FileIO>(merge_file);
+    uint64_t merge_offset = 0;
+
+    for(auto &[key, pos] : memory_index_) {
+        std::string raw_data = active_file_->Read(pos.offset, pos.size);
+        
+        merge_io->Append(raw_data);
+
+        pos.offset = merge_offset;
+        merge_offset += pos.size;
+    }
+
+    merge_io->Sync();
+
+    active_file_.reset();
+    merge_io.reset();
+
+    std::filesystem::remove(old_file);
+    std::filesystem::rename(merge_file, old_file);
+
+    active_file_ = std::make_unique<FileIO>(old_file);
+    current_offset_ = merge_offset;
 }
     
 }

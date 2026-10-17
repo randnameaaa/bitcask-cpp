@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 #include <memory>
+#include <filesystem>
 #include "log_record.h"
 #include "file_io.h"
 
@@ -20,12 +21,16 @@ public:
     std::string Get(const std::string& key);
 
     bool Delete(const std::string& key);
+
+    void Merge();
 private:
     void LoadIndexFromDisk();
 
     std::unique_ptr<FileIO> active_file_;
     std::unordered_map<std::string,LogRecordPos> memory_index_;
     uint64_t current_offset_{0};
+
+    std::string dir_path_;
 };
 
 

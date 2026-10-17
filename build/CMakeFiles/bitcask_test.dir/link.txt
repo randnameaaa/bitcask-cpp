@@ -1,0 +1,1 @@
+/usr/bin/c++ CMakeFiles/bitcask_test.dir/src/main.cpp.o CMakeFiles/bitcask_test.dir/src/log_record.cpp.o CMakeFiles/bitcask_test.dir/src/file_io.cpp.o CMakeFiles/bitcask_test.dir/src/engine.cpp.o -o bitcask_test 
