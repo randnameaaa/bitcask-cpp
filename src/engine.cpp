@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <iomanip>
 #include <sstream>
+#include <vector>
+#include <algorithm>
 
 namespace bitcask {
 
@@ -15,67 +17,73 @@ std::string GetFileName(const std::string& dir, uint32_t file_id) {
 
 Engine::Engine(const std::string& dir_path) : dir_path_(dir_path) {
     
+    if (!std::filesystem::exists(dir_path_)) {
+        std::filesystem::create_directories(dir_path_);
+    }
+
     LoadIndexFromDisk();
 }
 
 void Engine::LoadIndexFromDisk() {
-    uint32_t file_id = 1;
-    while(true) {
-        std::string file_path = GetFileName(dir_path_, file_id);
-        if (!std::filesystem::exists(file_path)) {
-            // 如果连 0001.data 都不存在，活跃文件 ID 依然是 1
-            active_file_id_ = std::max(1u, file_id - 1);
-            break;
+    std::vector<uint32_t> file_ids;
+    
+    // 1. 智能扫描目录，揪出所有 .data 文件的 ID
+    for (const auto& entry : std::filesystem::directory_iterator(dir_path_)) {
+        if (entry.path().extension() == ".data") {
+            std::string filename = entry.path().stem().string();
+            try {
+                file_ids.push_back(std::stoul(filename));
+            } catch (...) {} // 忽略类似 merge.data 这样的非纯数字文件
         }
-        auto file_io = std::make_unique<FileIO>(file_path);
-        uint64_t offset = 0;
-        while(true)
-            try{
-                std::string header_buf = file_io->Read(offset, 13);
-                if (header_buf.size() < 13) break; // 读到文件末尾了，退出循环
+    }
 
-                // 2. 从头部解析出 Key 和 Value 的长度
+    // 2. 如果是空目录，直接初始化第一代文件
+    if (file_ids.empty()) {
+        active_file_id_ = 1;
+        active_file_ = std::make_unique<FileIO>(GetFileName(dir_path_, active_file_id_));
+        current_offset_ = 0;
+        return;
+    }
+
+    // 3. 从小到大排序，严格按照时间线回放数据
+    std::sort(file_ids.begin(), file_ids.end());
+    
+    for (uint32_t id : file_ids) {
+        auto file_io = std::make_unique<FileIO>(GetFileName(dir_path_, id));
+        uint64_t offset = 0;
+
+        while (true) {
+            try {
+                std::string header_buf = file_io->Read(offset, 13);
+                if (header_buf.size() < 13) break;
+
                 const char* ptr = header_buf.data();
-                ptr += 5; // 跳过 4字节CRC 和 1字节Type
+                ptr += 5;
                 uint32_t key_size, value_size;
                 std::memcpy(&key_size, ptr, 4);
                 ptr += 4;
                 std::memcpy(&value_size, ptr, 4);
 
-                // 3. 计算这条数据在磁盘上的总长度
                 uint32_t record_total_size = 13 + key_size + value_size;
-
-                // 4. 把整条数据完整读出来，解包拿到 Key
                 std::string record_buf = file_io->Read(offset, record_total_size);
                 LogRecord record = DecodeLogRecord(record_buf);
 
-                // 5. 将 Key 和 对应的位置信息登记到内存目录
                 if (record.type == LogRecordType::kNormal) {
-                    memory_index_[record.key] = LogRecordPos{file_id, offset, record_total_size};
+                    memory_index_[record.key] = LogRecordPos{id, offset, record_total_size};
                 } else if (record.type == LogRecordType::kDeleted) {
-                    // 如果读到墓碑，说明这个数据被删了，从目录里抹除它
                     memory_index_.erase(record.key);
                 }
-
-                // 6. 游标向前推进，准备读下一条
                 offset += record_total_size;
-            }catch(...){
-                break;
-            }
+            } catch (...) { break; }
+        }
+        older_files_[id] = std::move(file_io);
         current_offset_ = offset; 
-        older_files_[file_id] = std::move(file_io); // 先全放进老文件里
-        file_id++;
     }
 
-    if (older_files_.empty()) {
-        // 目录为空，凭空创建 0001.data
-        active_file_ = std::make_unique<FileIO>(GetFileName(dir_path_, 1));
-        current_offset_ = 0;
-    } else {
-        // 把找到的最后一个文件从老文件集合里抽离出来，作为当前活跃文件
-        active_file_ = std::move(older_files_[active_file_id_]);
-        older_files_.erase(active_file_id_);
-    }
+    // 4. 把 ID 最大的那个文件从 older_files_ 里抽出来当做活跃文件
+    active_file_id_ = file_ids.back();
+    active_file_ = std::move(older_files_[active_file_id_]);
+    older_files_.erase(active_file_id_);
 }
 
 void Engine::Put(const std::string& key, const std::string& value) {
@@ -146,33 +154,48 @@ bool Engine::Delete(const std::string& key) {
 }
 
 void Engine::Merge() {
-    if(memory_index_.empty()) return ;
+    if (older_files_.empty()) return; // 没有历史文件，不用折腾
 
-    std::string old_file = dir_path_ + "/0001.data";
+    // 选定历史文件里最老的 ID，作为合并后的“终极归宿”
+    uint32_t merge_id = older_files_.begin()->first;
     std::string merge_file = dir_path_ + "/merge.data";
-
     auto merge_io = std::make_unique<FileIO>(merge_file);
     uint64_t merge_offset = 0;
 
-    for(auto &[key, pos] : memory_index_) {
-        std::string raw_data = active_file_->Read(pos.offset, pos.size);
-        
-        merge_io->Append(raw_data);
+    // 1. 遍历内存目录，只要是活着的、并且在老文件里的数据，全部揪出来
+    for (auto& [key, pos] : memory_index_) {
+        if (pos.file_id == active_file_id_) continue; // 活跃文件还没满，不参与合并
 
+        // 读出纯净的旧数据
+        std::string raw_data = older_files_[pos.file_id]->Read(pos.offset, pos.size);
+        
+        // 写进新的合并文件里
+        merge_io->Append(raw_data);
+        
+        // 关键：更新这把钥匙的门牌号，指向全新的归宿
+        pos.file_id = merge_id;
         pos.offset = merge_offset;
         merge_offset += pos.size;
     }
 
     merge_io->Sync();
+    merge_io.reset(); // 释放文件指针
 
-    active_file_.reset();
-    merge_io.reset();
+    // 2. 霸道清理：把 older_files_ 里所有的旧文件无情删掉
+    for (auto& [id, file] : older_files_) {
+        file.reset();
+        std::filesystem::remove(GetFileName(dir_path_, id));
+    }
+    older_files_.clear();
 
-    std::filesystem::remove(old_file);
-    std::filesystem::rename(merge_file, old_file);
-
-    active_file_ = std::make_unique<FileIO>(old_file);
-    current_offset_ = merge_offset;
-}
+    // 3. 移花接木：把 merge.data 改名为我们选定的那一个老文件
+    std::string new_file_name = GetFileName(dir_path_, merge_id);
+    std::filesystem::rename(merge_file, new_file_name);
     
+    // 重新挂载回历史记录里，继续发光发热
+    older_files_[merge_id] = std::make_unique<FileIO>(new_file_name);
+
+    std::cout << "Merge Completed! All old data compacted into file ID: " << merge_id << std::endl;
+}
+
 }

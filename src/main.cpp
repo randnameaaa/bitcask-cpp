@@ -16,5 +16,7 @@ int main() {
     std::cout << "Get user_10 (old file): " << db.Get("user_10").size() << " bytes" << std::endl;
     std::cout << "Get user_999 (active file): " << db.Get("user_999").size() << " bytes" << std::endl;
 
+    db.Merge();
+    std::cout << "Get user_10 after merge: " << db.Get("user_10").size() << " bytes" << std::endl;
     return 0;
 }

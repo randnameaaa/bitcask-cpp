@@ -13,7 +13,7 @@ namespace bitcask {
 
 class Engine{
 public:
-    explicit Engine(const std::string& dir_path);
+    explicit Engine(const std::string& dir_path = "./data");
 
     ~Engine() = default;
 
